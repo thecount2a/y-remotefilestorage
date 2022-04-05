@@ -43,7 +43,7 @@ export default class NodejsLocalFileStorageAdapter extends Observable {
     {
       if (files[file].isFile() && files[file].name.startsWith(pattern))
       {
-        returnObj[files[file].name] = {name: files[file].name, uniqueId: getChecksum(join(this.directory, files[file].name))}
+        returnObj[files[file].name] = {name: files[file].name, uniqueId: await getChecksum(join(this.directory, files[file].name))}
       }
     }
     return returnObj
@@ -54,7 +54,7 @@ export default class NodejsLocalFileStorageAdapter extends Observable {
     const contents = fs.readFileSync(thisPath)
     const obj = {
       contents,
-      uniqueId: getChecksum(thisPath)
+      uniqueId: await getChecksum(thisPath)
     }
     return obj
   }
