@@ -30,9 +30,11 @@ if (process.argv.length > 3)
   actorId = process.argv[3]
 }
 let chat = null
-if (process.argv.length > 4)
+let chatto = null
+if (process.argv.length > 5)
 {
-  chat = process.argv[4]
+  chatto = process.argv[4]
+  chat = process.argv[5]
 }
 
 const storageAdapter = new NodejsLocalFileStorageAdapter("chat")
@@ -68,7 +70,7 @@ let peers = Object.keys(channel.peers)
 if (chat)
 {
   console.log("Queuing outgoing message: "+chat)
-  await channel.queueOutgoingMessage(peers[0], chat)
+  await channel.queueOutgoingMessage(chatto, chat)
   await channel.sync()
 }
 
