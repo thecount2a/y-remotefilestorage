@@ -12,6 +12,7 @@ export default class DoubleRatchetFileStorage extends Observable {
     this.actorId = actorId
     this.incomingQueue = []
     this.outgoingQueues = {}
+    this.unpushedQueues = {}
     this.alreadySeenMessageCollection = {}
     this.published = {}
     this.account = null
@@ -51,6 +52,11 @@ export default class DoubleRatchetFileStorage extends Observable {
     if (oq)
     {
       this.outgoingQueues = JSON.parse(oq)
+    }
+    const unpushedQueues = await this._kvGet('unpushedQueues ')
+    if (unpushedQueues)
+    {
+      this.unpushedQueues = JSON.parse(unpushedQueues)
     }
     const lastSync = await this._kvGet('alreadySeenMessageCollection')
     if (lastSync)
@@ -100,6 +106,7 @@ export default class DoubleRatchetFileStorage extends Observable {
     await this._kvSet('published', JSON.stringify(published))
     await this._kvSet('incomingQueue', JSON.stringify(this.incomingQueue))
     await this._kvSet('outgoingQueues', JSON.stringify(this.outgoingQueues))
+    await this._kvSet('unpushedQueues', JSON.stringify(this.unpushedQueues))
     await this._kvSet('alreadySeenMessageCollection', JSON.stringify(this.alreadySeenMessageCollection))
     await this._kvSet('account', this.account.pickle('fixed_insecure_key'))
     const saveSessions = {}
@@ -375,66 +382,54 @@ export default class DoubleRatchetFileStorage extends Observable {
 
     let changedPeers = false
     /* First encrypt outgoing messages */
-    for (let actorId in this.outgoingQueues)
+    for (let actorId in this.peers)
     {
-      if (actorId in this.peers)
+      if (!(actorId in this.published))
       {
-	if (!(actorId in this.published))
-	{
-	  this.published[actorId] = new Map()
-	}
-	let newPublished = new Map(this.published[actorId])
-	let pushThisQueue = false
-	let currentIndex = this.peers[actorId].currentIndex
-	let tempSession = new Olm.Session()
-	let reason = "unknown"
-	/* Copy temp session */
-	tempSession.unpickle('fixed_insecure_key', this.sessions[actorId].pickle('fixed_insecure_key'))
+	this.published[actorId] = new Map()
+      }
+      let pushThisQueue = false
+      if (actorId in this.unpushedQueues)
+      {
+	pushThisQueue = true
+      }
 
-	for (let i in this.outgoingQueues[actorId])
+      for (let i in this.outgoingQueues[actorId])
+      {
+	try
 	{
-	  try
-	  {
-	    const ciphertext = tempSession.encrypt(JSON.stringify(this.outgoingQueues[actorId][i]))
-	    newPublished.set(this.peers[actorId].currentIndex, ciphertext)
-	    pushThisQueue = true
-	    reason = 'message'
-	    currentIndex++
-	  }
-	  catch (e)
-	  {
-	    this.peers[actorId].encryptionFailures++
-	    console.log("Failed encrypt outgoing message with error: "+e.message)
-	    changedPeers = true
-	  }
-	}
-	const indexes = Array.from(newPublished.keys())
-	if (indexes.length > 0 && this.peers[actorId].seenIndex >= indexes[0])
-	{
-	  newPublished = new Map(Array.from(newPublished.entries()).filter(item => item[0] > this.peers[actorId].seenIndex))
+	  this.outgoingQueues[actorId][i].index = this.peers[actorId].currentIndex
+	  const ciphertext = this.sessions[actorId].encrypt(JSON.stringify(this.outgoingQueues[actorId][i]))
+	  this.published[actorId].set(this.peers[actorId].currentIndex, ciphertext)
 	  pushThisQueue = true
-	  reason = 'trim'
+	  this.peers[actorId].currentIndex++
 	}
-	if (pushThisQueue)
+	catch (e)
 	{
-	  /* Actually push the queue */
-	  try
-	  {
-	    /* Upload message files */
-	    let uploadText = Array.from(newPublished.entries()).map(item => item[1].type.toString()+item[1].body).join("\n")
-	    await this.storageAdapter.putFile(FILE_PREFIX + this.actorId.toString() + '.' + actorId.toString() + '.msg', uploadText)
-
-	    /* If pushing was successful, flush everything into current state */
-	    this.published[actorId] = newPublished
-	    this.peers[actorId].currentIndex = currentIndex
-	    this.sessions[actorId] = tempSession
-	    this.outgoingQueues[actorId] = []
-	  }
-	  catch (e)
-	  {
-	    console.log("Failed to push queue ("+reason+") so not flushing session")
-	  }
+	  this.peers[actorId].encryptionFailures++
+	  console.log("Failed encrypt outgoing message with error: "+e.message)
+	  changedPeers = true
 	}
+      }
+      const indexes = Array.from(this.published[actorId].keys())
+      if (indexes.length > 0 && this.peers[actorId].seenIndex >= indexes[0])
+      {
+	this.published[actorId] = new Map(Array.from(this.published[actorId].entries()).filter(item => item[0] > this.peers[actorId].seenIndex))
+	pushThisQueue = true
+      }
+      if (pushThisQueue)
+      {
+	this.outgoingQueues[actorId] = []
+	if (!(actorId in this.unpushedQueues))
+	{
+	  this.unpushedQueues[actorId] = true
+	}
+
+	/* Upload message files */
+	let uploadText = Array.from(this.published[actorId].entries()).map(item => item[1].type.toString()+item[1].body).join("\n")
+	await this.storageAdapter.putFile(FILE_PREFIX + this.actorId.toString() + '.' + actorId.toString() + '.msg', uploadText)
+
+	delete this.unpushedQueues[actorId]
       }
     }
 
