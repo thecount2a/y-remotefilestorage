@@ -1,8 +1,11 @@
 import { Observable } from 'lib0/observable.js'
+import { pid } from 'process'
+
 import Olm from 'olm'
 
 const NUM_ONE_TIME_KEYS = 10
 const FILE_PREFIX = 'drchannel.'
+const MAX_HISTORICAL_SESSIONS = 3
 
 export default class DoubleRatchetFileStorage extends Observable {
   constructor (storageAdapter, actorId, handshakeMessage, kvGet, kvSet) {
@@ -10,12 +13,12 @@ export default class DoubleRatchetFileStorage extends Observable {
     this.storageAdapter = storageAdapter
     this.actorId = actorId
     this.incomingQueue = []
-    this.outgoingQueue = []
+    this.outgoingQueues = {}
     this.alreadySeenMessageCollection = {}
-    this.messageQueuesToPush = []
     this.published = {}
     this.account = null
     this.sessions = {}
+    this.oldSessions = {}
     this.stateloaded = false
     this.synced = false
     this.peers = {}
@@ -47,20 +50,15 @@ export default class DoubleRatchetFileStorage extends Observable {
     {
       this.incomingQueue = JSON.parse(iq)
     }
-    const oq = await this._kvGet('outgoingQueue')
+    const oq = await this._kvGet('outgoingQueues')
     if (oq)
     {
-      this.outgoingQueue = JSON.parse(oq)
+      this.outgoingQueues = JSON.parse(oq)
     }
     const lastSync = await this._kvGet('alreadySeenMessageCollection')
     if (lastSync)
     {
       this.alreadySeenMessageCollection = JSON.parse(lastSync)
-    }
-    const messageQueuesToPush = await this._kvGet('messageQueuesToPush')
-    if (messageQueuesToPush)
-    {
-      this.messageQueuesToPush = JSON.parse(messageQueuesToPush)
     }
     const acct = await this._kvGet('account')
     this.account = new Olm.Account();
@@ -83,6 +81,11 @@ export default class DoubleRatchetFileStorage extends Observable {
 	this.sessions[session] = sessionObj
       }
     }
+    const oldSessions = await this._kvGet('oldSessions')
+    if (oldSessions)
+    {
+      this.oldSessions = JSON.parse(oldSessions)
+    }
     const peers = await this._kvGet('peers')
     if (peers)
     {
@@ -104,9 +107,8 @@ export default class DoubleRatchetFileStorage extends Observable {
     }
     await this._kvSet('published', JSON.stringify(published))
     await this._kvSet('incomingQueue', JSON.stringify(this.incomingQueue))
-    await this._kvSet('outgoingQueue', JSON.stringify(this.outgoingQueue))
+    await this._kvSet('outgoingQueues', JSON.stringify(this.outgoingQueues))
     await this._kvSet('alreadySeenMessageCollection', JSON.stringify(this.alreadySeenMessageCollection))
-    await this._kvSet('messageQueuesToPush', JSON.stringify(this.messageQueuesToPush))
     await this._kvSet('account', this.account.pickle('fixed_insecure_key'))
     const saveSessions = {}
     for (let session in this.sessions)
@@ -114,6 +116,7 @@ export default class DoubleRatchetFileStorage extends Observable {
       saveSessions[session] = this.sessions[session].pickle('fixed_insecure_key')
     }
     await this._kvSet('sessions', JSON.stringify(saveSessions))
+    await this._kvSet('oldSessions', JSON.stringify(this.oldSessions))
     await this._kvSet('peers', JSON.stringify(this.peers))
   }
 
@@ -192,6 +195,11 @@ export default class DoubleRatchetFileStorage extends Observable {
 	    for (let msg in msgList)
 	    {
 	      currentMessages.push({actorId: parts[1], type: parseInt(msgList[msg][0]), message: msgList[msg].slice(1), verified: true})
+	      if (!(currentMessages[currentMessages.length-1].message in this.alreadySeenMessageCollection))
+	      {
+		this.incomingQueue.push(currentMessages[currentMessages.length-1])
+		this.alreadySeenMessageCollection[currentMessages[currentMessages.length-1].message] = currentMessages[currentMessages.length-1].actorId
+	      }
 	    }
 	  }
 	  /* Also, carefully look at message files that are addressed to our actorId, from unverified actors */
@@ -205,6 +213,11 @@ export default class DoubleRatchetFileStorage extends Observable {
 	      if (msgList[0].length < 5000)
 	      {
 		currentMessages.push({actorId: parts[1], type: parseInt(msgList[0][0]), message: msgList[0].slice(1), verified: false})
+		if (!(currentMessages[currentMessages.length-1].message in this.alreadySeenMessageCollection))
+		{
+		  this.incomingQueue.push(currentMessages[currentMessages.length-1])
+		  this.alreadySeenMessageCollection[currentMessages[currentMessages.length-1].message] = currentMessages[currentMessages.length-1].actorId
+		}
 	      }
 	    }
 	  }
@@ -227,21 +240,6 @@ export default class DoubleRatchetFileStorage extends Observable {
       }
     }
 
-    for (let m in currentMessages)
-    {
-      if (!(currentMessages[m].message in this.alreadySeenMessageCollection))
-      {
-	this.incomingQueue.push(currentMessages[m])
-      }
-    }
-    /* Add newly visited messages */
-    for (let m in currentMessages)
-    {
-      if (!(currentMessages[m].message in this.alreadySeenMessageCollection))
-      {
-	this.alreadySeenMessageCollection[currentMessages[m].message] = currentMessages[m].actorId
-      }
-    }
     /* Delete messages from already seen which have disappeared from any files */
     const messagesOnly = currentMessages.map(ob => ob.message)
     for (let m in this.alreadySeenMessageCollection)
@@ -271,11 +269,55 @@ export default class DoubleRatchetFileStorage extends Observable {
 	{
 	  this.sessions[actorId] = new Olm.Session()
 	  this.sessions[actorId].create_inbound_from(this.account, this.peers[actorId].key, this.incomingQueue[m].message)
-	  this.outgoingQueue.push({actorId, message: {type: "handshake", body: this.handshakeMessage}})
+	  this.outgoingQueues[actorId] = []
+	  this.outgoingQueues[actorId].push({type: "handshake", body: this.handshakeMessage})
 	}
+	let plaintext = null
 	try
 	{
-	  const plaintext = this.sessions[actorId].decrypt(this.incomingQueue[m].type, this.incomingQueue[m].message)
+	  if (!(actorId in this.oldSessions))
+	  {
+	    this.oldSessions[actorId] = []
+	  }
+	  this.oldSessions[actorId].push(this.sessions[actorId].pickle('fixed_insecure_key'))
+
+	  plaintext = this.sessions[actorId].decrypt(this.incomingQueue[m].type, this.incomingQueue[m].message)
+	}
+	catch (e)
+	{
+	  let fixedDecrypt = false
+	  for (let i = this.oldSessions[actorId].length - 2; i >= 0; i--)
+	  {
+	    try
+	    {
+	      let tempSession = new Olm.Session()
+	      tempSession.unpickle('fixed_insecure_key', this.oldSessions[actorId][i])
+	      plaintext = tempSession.decrypt(this.incomingQueue[m].type, this.incomingQueue[m].message)
+	      fixedDecrypt = true
+	    }
+	    catch (e)
+	    {
+	      console.log("Nope, couldn't fix a decryption")
+	    }
+	    if (fixedDecrypt)
+	    {
+	      console.log("Yay, keeping historical sessions fixed a decryption")
+	      break
+	    }
+	  }
+	  if (!fixedDecrypt)
+	  {
+	  this.peers[actorId].decryptionFailures++
+	  console.log("Failed decrypt incoming message with error: "+e.message)
+	  changedPeers = true
+	  }
+	}
+	if (this.oldSessions[actorId].length > MAX_HISTORICAL_SESSIONS)
+	{
+	  this.oldSessions[actorId].splice(0, 1)
+	}
+	if (plaintext)
+	{
 	  const msgObj = JSON.parse(plaintext)
 	  /* Leave message on queue if it's not a handshake and the actor has not been verified */
 	  if (this.peers[actorId].state == "verified" || msgObj.type == "handshake")
@@ -295,16 +337,10 @@ export default class DoubleRatchetFileStorage extends Observable {
 	    }
 	    else
 	    {
-	      this.outgoingQueue.push({actorId, message: {type: "seen", seenIndex: msgObj.index}})
+	      this.outgoingQueues[actorId].push({type: "seen", seenIndex: msgObj.index})
 	    }
 	    messagesToPop.push(m)
 	  }
-	}
-	catch (e)
-	{
-	  this.peers[actorId].decryptionFailures++
-	  console.log("Failed decrypt incoming message with error: "+e.message)
-	  changedPeers = true
 	}
       }
     }
@@ -338,8 +374,14 @@ export default class DoubleRatchetFileStorage extends Observable {
 	const otk = this.peers[actorId].oneTimeKeys[0]
 	this.sessions[actorId].create_outbound(this.account, this.peers[actorId].key, otk.key)
 	usedOneTimeKeys.push(otk.filename)
-	this.outgoingQueue.push({actorId, message: {type: "handshake", body: this.handshakeMessage}})
+	this.outgoingQueues[actorId] = []
+	this.outgoingQueues[actorId].push({type: "handshake", body: this.handshakeMessage})
       }
+    }
+    /* Actually delete one time key files (if any were used) so nobody else tries using them */
+    for (let i in usedOneTimeKeys)
+    {
+      await this.storageAdapter.deleteFile(usedOneTimeKeys[i])
     }
 
     /* Now upload 3 types of files, our id file, our one-time-key files, and message files (coming from our actorId) */
@@ -374,71 +416,80 @@ export default class DoubleRatchetFileStorage extends Observable {
     }
 
     let changedPeers = false
-    const messagesToPop = []
     /* First encrypt outgoing messages */
-    for (let i in this.outgoingQueue)
+    for (let actorId in this.outgoingQueues)
     {
-      if (this.outgoingQueue[i].actorId in this.peers)
+      if (actorId in this.peers)
       {
-	let actorId = this.outgoingQueue[i].actorId
-	let session = this.sessions[actorId]
 	if (!(actorId in this.published))
 	{
 	  this.published[actorId] = new Map()
 	}
-	this.outgoingQueue[i].message.index = this.peers[actorId].currentIndex
-	try
+	let newPublished = new Map(this.published[actorId])
+	let pushThisQueue = false
+	let currentIndex = this.peers[actorId].currentIndex
+	let tempSession = new Olm.Session()
+	let reason = "unknown"
+	/* Copy temp session */
+	tempSession.unpickle('fixed_insecure_key', this.sessions[actorId].pickle('fixed_insecure_key'))
+
+	for (let i in this.outgoingQueues[actorId])
 	{
-	  const ciphertext = session.encrypt(JSON.stringify(this.outgoingQueue[i].message))
-	  this.published[actorId].set(this.peers[actorId].currentIndex, ciphertext)
-	  messagesToPop.push(i)
-	  if (!this.messageQueuesToPush.includes(actorId))
+	  try
 	  {
-	    this.messageQueuesToPush.push(actorId)
+	    if (!(actorId in this.oldSessions))
+	    {
+	      this.oldSessions[actorId] = []
+	    }
+	    this.oldSessions[actorId].push(tempSession.pickle('fixed_insecure_key'))
+	    if (this.oldSessions[actorId].length > MAX_HISTORICAL_SESSIONS)
+	    {
+	      this.oldSessions[actorId].splice(0, 1)
+	    }
+
+	  const ciphertext = tempSession.encrypt(JSON.stringify(this.outgoingQueues[actorId][i]))
+	  newPublished.set(this.peers[actorId].currentIndex, ciphertext)
+	  pushThisQueue = true
+	  reason = 'message'
+	  currentIndex++
 	  }
-	  this.peers[actorId].currentIndex++
+	  catch (e)
+	  {
+	    this.peers[actorId].encryptionFailures++
+	    console.log("Failed encrypt outgoing message with error: "+e.message)
+	    changedPeers = true
+	  }
 	}
-	catch (e)
-	{
-	  this.peers[actorId].encryptionFailures++
-	  console.log("Failed encrypt outgoing message with error: "+e.message)
-	  changedPeers = true
-	}
-      }
-    }
-    for (let actorId in this.peers)
-    {
-      if (actorId in this.published)
-      {
-	const indexes = Array.from(this.published[actorId].keys())
+	const indexes = Array.from(newPublished.keys())
 	if (indexes.length > 0 && this.peers[actorId].seenIndex >= indexes[0])
 	{
-	  this.published[actorId] = new Map(Array.from(this.published[actorId].entries()).filter(item => item[0] > this.peers[actorId].seenIndex))
-	  if (!this.messageQueuesToPush.includes(actorId))
+	  newPublished = new Map(Array.from(newPublished.entries()).filter(item => item[0] > this.peers[actorId].seenIndex))
+	  pushThisQueue = true
+	  reason = 'trim'
+	}
+	if (pushThisQueue)
+	{
+	  /* Actually push the queue */
+	  try
 	  {
-	    this.messageQueuesToPush.push(actorId)
+	    /* Upload message files */
+	    let uploadText = Array.from(newPublished.entries()).map(item => item[1].type.toString()+item[1].body).join("\n")
+	    await this.storageAdapter.putFile(FILE_PREFIX + this.actorId.toString() + '.' + actorId.toString() + '.msg', uploadText)
+
+	    /* If pushing was successful, flush everything into current state */
+	    this.published[actorId] = newPublished
+	    this.peers[actorId].currentIndex = currentIndex
+	    this.sessions[actorId] = tempSession
+	    this.outgoingQueues[actorId] = []
+	  }
+	  catch (e)
+	  {
+	    console.log("Failed to push queue ("+reason+") so not flushing session")
 	  }
 	}
       }
     }
 
-    for (let i = messagesToPop.length - 1; i >= 0; i--)
-    {
-      this.outgoingQueue.splice(messagesToPop[i], 1)
-    }
-    /* Upload message files */
-    for (let i in this.messageQueuesToPush)
-    {
-      let uploadText = Array.from(this.published[this.messageQueuesToPush[i]].entries()).map(item => item[1].type.toString()+item[1].body).join("\n")
-      await this.storageAdapter.putFile(FILE_PREFIX + this.actorId.toString() + '.' + this.messageQueuesToPush[i].toString() + '.msg', uploadText)
-    }
-    this.messageQueuesToPush = []
-
-    /* Now the sync is done, actually delete one time key files (if any were used) so nobody else tries using them */
-    for (let i in usedOneTimeKeys)
-    {
-      await this.storageAdapter.deleteFile(usedOneTimeKeys[i])
-    }
     if (changedPeers)
     {
       this.emit('changedPeers', [this])
@@ -478,7 +529,7 @@ export default class DoubleRatchetFileStorage extends Observable {
   }
 
   async queueOutgoingMessage (actorId, message) {
-    this.outgoingQueue.push({actorId, message: {type: "message", body: message}})
+    this.outgoingQueues[actorId].push({type: "message", body: message})
   }
 
 }
