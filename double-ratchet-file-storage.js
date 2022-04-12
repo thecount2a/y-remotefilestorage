@@ -18,7 +18,6 @@ export default class DoubleRatchetFileStorage extends Observable {
     this.published = {}
     this.account = null
     this.sessions = {}
-    this.oldSessions = {}
     this.stateloaded = false
     this.synced = false
     this.peers = {}
@@ -81,11 +80,6 @@ export default class DoubleRatchetFileStorage extends Observable {
 	this.sessions[session] = sessionObj
       }
     }
-    const oldSessions = await this._kvGet('oldSessions')
-    if (oldSessions)
-    {
-      this.oldSessions = JSON.parse(oldSessions)
-    }
     const peers = await this._kvGet('peers')
     if (peers)
     {
@@ -116,7 +110,6 @@ export default class DoubleRatchetFileStorage extends Observable {
       saveSessions[session] = this.sessions[session].pickle('fixed_insecure_key')
     }
     await this._kvSet('sessions', JSON.stringify(saveSessions))
-    await this._kvSet('oldSessions', JSON.stringify(this.oldSessions))
     await this._kvSet('peers', JSON.stringify(this.peers))
   }
 
@@ -275,46 +268,13 @@ export default class DoubleRatchetFileStorage extends Observable {
 	let plaintext = null
 	try
 	{
-	  if (!(actorId in this.oldSessions))
-	  {
-	    this.oldSessions[actorId] = []
-	  }
-	  this.oldSessions[actorId].push(this.sessions[actorId].pickle('fixed_insecure_key'))
-
 	  plaintext = this.sessions[actorId].decrypt(this.incomingQueue[m].type, this.incomingQueue[m].message)
 	}
 	catch (e)
 	{
-	  let fixedDecrypt = false
-	  for (let i = this.oldSessions[actorId].length - 2; i >= 0; i--)
-	  {
-	    try
-	    {
-	      let tempSession = new Olm.Session()
-	      tempSession.unpickle('fixed_insecure_key', this.oldSessions[actorId][i])
-	      plaintext = tempSession.decrypt(this.incomingQueue[m].type, this.incomingQueue[m].message)
-	      fixedDecrypt = true
-	    }
-	    catch (e)
-	    {
-	      console.log("Nope, couldn't fix a decryption")
-	    }
-	    if (fixedDecrypt)
-	    {
-	      console.log("Yay, keeping historical sessions fixed a decryption")
-	      break
-	    }
-	  }
-	  if (!fixedDecrypt)
-	  {
 	  this.peers[actorId].decryptionFailures++
 	  console.log("Failed decrypt incoming message with error: "+e.message)
 	  changedPeers = true
-	  }
-	}
-	if (this.oldSessions[actorId].length > MAX_HISTORICAL_SESSIONS)
-	{
-	  this.oldSessions[actorId].splice(0, 1)
 	}
 	if (plaintext)
 	{
@@ -437,21 +397,11 @@ export default class DoubleRatchetFileStorage extends Observable {
 	{
 	  try
 	  {
-	    if (!(actorId in this.oldSessions))
-	    {
-	      this.oldSessions[actorId] = []
-	    }
-	    this.oldSessions[actorId].push(tempSession.pickle('fixed_insecure_key'))
-	    if (this.oldSessions[actorId].length > MAX_HISTORICAL_SESSIONS)
-	    {
-	      this.oldSessions[actorId].splice(0, 1)
-	    }
-
-	  const ciphertext = tempSession.encrypt(JSON.stringify(this.outgoingQueues[actorId][i]))
-	  newPublished.set(this.peers[actorId].currentIndex, ciphertext)
-	  pushThisQueue = true
-	  reason = 'message'
-	  currentIndex++
+	    const ciphertext = tempSession.encrypt(JSON.stringify(this.outgoingQueues[actorId][i]))
+	    newPublished.set(this.peers[actorId].currentIndex, ciphertext)
+	    pushThisQueue = true
+	    reason = 'message'
+	    currentIndex++
 	  }
 	  catch (e)
 	  {
