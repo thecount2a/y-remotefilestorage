@@ -1,11 +1,9 @@
 import { Observable } from 'lib0/observable.js'
-import { pid } from 'process'
 
 import Olm from 'olm'
 
 const NUM_ONE_TIME_KEYS = 10
 const FILE_PREFIX = 'drchannel.'
-const MAX_HISTORICAL_SESSIONS = 3
 
 export default class DoubleRatchetFileStorage extends Observable {
   constructor (storageAdapter, actorId, handshakeMessage, kvGet, kvSet) {
