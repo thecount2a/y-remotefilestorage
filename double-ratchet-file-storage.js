@@ -53,7 +53,7 @@ export default class DoubleRatchetFileStorage extends Observable {
     {
       this.outgoingQueues = JSON.parse(oq)
     }
-    const unpushedQueues = await this._kvGet('unpushedQueues ')
+    const unpushedQueues = await this._kvGet('unpushedQueues')
     if (unpushedQueues)
     {
       this.unpushedQueues = JSON.parse(unpushedQueues)
