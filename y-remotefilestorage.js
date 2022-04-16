@@ -257,21 +257,9 @@ export default class RemoteFileStoragePersistence extends Observable {
     {
       await this._checkInitialSync()
     }
-    while (this.cachedUpdate.length > 0)
+    if (this.cachedUpdate.length > 0)
     {
       await flushState(this, false)
-      /* Whoops, if more state has shown up since last time the state began flushing, wait for it all to flush */
-      if (this.cachedUpdate.length > 0)
-      {
-        await new Promise((resolve, reject) =>
-          {
-            setTimeout(() =>
-              {
-                resolve()
-              }, 10)
-          }
-        )
-      }
     }
     this.doc.off('update', this._storeUpdate)
     this.doc.off('destroy', this.destroy)

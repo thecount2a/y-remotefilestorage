@@ -452,7 +452,7 @@ export default class DoubleRatchetFileStorage extends Observable {
     this.synced = true
   }
 
-  async getPeers (peerState) {
+  getPeers (peerState) {
     const filteredPeers = {}
     for (let peer in this.peers)
     {
@@ -464,14 +464,14 @@ export default class DoubleRatchetFileStorage extends Observable {
     return filteredPeers
   }
 
-  async markPeerTrusted (actorId) {
+  markPeerTrusted (actorId) {
     if (actorId in this.peers)
     {
       this.peers[actorId].state = "verified"
     }
   }
 
-  async queueOutgoingMessage (actorId, message) {
+  queueOutgoingMessage (actorId, message) {
     this.outgoingQueues[actorId].push({type: "message", body: message})
   }
 
