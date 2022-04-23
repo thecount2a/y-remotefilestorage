@@ -39,7 +39,8 @@ if (process.argv.length > 5)
 
 const storageAdapter = new NodejsLocalFileStorageAdapter("chat")
 const kv = new kvstore()
-const channel = new DoubleRatchetFileStorage(storageAdapter, actorId, "mydevice"+append, k => kv.get(k), (k,v) => kv.set(k, v));
+//const channel = new DoubleRatchetFileStorage(storageAdapter, actorId, "mydevice"+append, k => kv.get(k), (k,v) => kv.set(k, v));
+const channel = new DoubleRatchetFileStorage(storageAdapter, actorId, "mydevice"+append, "mydevice"+append);
 try
 {
   kv.map = JSON.parse(fs.readFileSync("./state"+append).toString())
@@ -61,8 +62,8 @@ for (let peer in channel.peers)
 {
   if (channel.peers[peer].state != "verified")
   {
-	console.log("Setting peer "+peer+" to verified")
-	channel.peers[peer].state = "verified"
+    console.log("Setting peer "+peer+" to verified")
+    await channel.markPeerTrusted(peer)
   }
 }
 await channel.sync()
