@@ -10,11 +10,6 @@ export default class DoubleRatchetFileStorage extends Observable {
     super()
     this.storageAdapter = storageAdapter
     this.actorId = actorId
-    this.incomingQueue = []
-    this.outgoingQueues = {}
-    this.unpushedQueues = {}
-    this.alreadySeenMessageCollection = {}
-    this.published = {}
     this.account = null
     this.sessions = {}
     this.stateloaded = false
@@ -31,38 +26,6 @@ export default class DoubleRatchetFileStorage extends Observable {
       await Olm.init()
     }
 
-    const pub = await this._kvGet("published")
-    if (pub)
-    {
-      const pubObj = JSON.parse(pub)
-      for (let pubMap in pubObj)
-      {
-	const unsortedArray = pubObj[pubMap]
-	const sortedArray = unsortedArray.sort(([key1, val1], [key2, val2]) => (key1 - key2))
-	const sortedMap = new Map(sortedArray)
-	this.published[pubMap] = sortedMap
-      }
-    }
-    const iq = await this._kvGet('incomingQueue')
-    if (iq)
-    {
-      this.incomingQueue = JSON.parse(iq)
-    }
-    const oq = await this._kvGet('outgoingQueues')
-    if (oq)
-    {
-      this.outgoingQueues = JSON.parse(oq)
-    }
-    const unpushedQueues = await this._kvGet('unpushedQueues')
-    if (unpushedQueues)
-    {
-      this.unpushedQueues = JSON.parse(unpushedQueues)
-    }
-    const lastSync = await this._kvGet('alreadySeenMessageCollection')
-    if (lastSync)
-    {
-      this.alreadySeenMessageCollection = JSON.parse(lastSync)
-    }
     const acct = await this._kvGet('account')
     this.account = new Olm.Account();
     if (acct)
@@ -73,21 +36,19 @@ export default class DoubleRatchetFileStorage extends Observable {
     {
       this.account.create()
     }
-    const sessions = await this._kvGet('sessions')
-    if (sessions)
-    {
-      const sessionList = JSON.parse(sessions)
-      for (let session in sessionList)
-      {
-	const sessionObj = new Olm.Session()
-	sessionObj.unpickle('fixed_insecure_key', sessionList[session])
-	this.sessions[session] = sessionObj
-      }
-    }
     const peers = await this._kvGet('peers')
     if (peers)
     {
       this.peers = JSON.parse(peers)
+      for (let actorId in this.peers)
+      {
+	if (this.peers[actorId].session)
+	{
+	  const sessionObj = new Olm.Session()
+	  sessionObj.unpickle('fixed_insecure_key', this.peers[actorId].session)
+	  this.sessions[actorId] = sessionObj
+	}
+      }
     }
 
     this.stateloaded = true
@@ -98,23 +59,11 @@ export default class DoubleRatchetFileStorage extends Observable {
     {
       throw 'Tried to save state without loading it first'
     }
-    const published = {}
-    for (let actorId in this.published)
-    {
-      published[actorId] = Array.from(this.published[actorId], ([name, value]) => ([name, value]))
-    }
-    await this._kvSet('published', JSON.stringify(published))
-    await this._kvSet('incomingQueue', JSON.stringify(this.incomingQueue))
-    await this._kvSet('outgoingQueues', JSON.stringify(this.outgoingQueues))
-    await this._kvSet('unpushedQueues', JSON.stringify(this.unpushedQueues))
-    await this._kvSet('alreadySeenMessageCollection', JSON.stringify(this.alreadySeenMessageCollection))
     await this._kvSet('account', this.account.pickle('fixed_insecure_key'))
-    const saveSessions = {}
     for (let session in this.sessions)
     {
-      saveSessions[session] = this.sessions[session].pickle('fixed_insecure_key')
+      this.peers[session].session = this.sessions[session].pickle('fixed_insecure_key')
     }
-    await this._kvSet('sessions', JSON.stringify(saveSessions))
     await this._kvSet('peers', JSON.stringify(this.peers))
   }
 
@@ -134,7 +83,7 @@ export default class DoubleRatchetFileStorage extends Observable {
 	if (parts[1] != this.actorId && !(parts[1] in this.peers))
 	{
 	  const id_key = await this.storageAdapter.getFile(fileList[f].name)
-	  this.peers[parts[1]] = { key: id_key.contents.toString(), state: "unverified", oneTimeKeys: [], seenIndex: -1, handshake: null, messageFilesSeen: {}, decryptionFailures: 0, encryptionFailures: 0, currentIndex: 0 }
+	  this.peers[parts[1]] = { key: id_key.contents.toString(), state: "unverified", oneTimeKeys: [], seenIndex: -1, handshake: null, messageFilesSeen: {}, decryptionFailures: 0, encryptionFailures: 0, currentIndex: 0, incomingQueue: [], outgoingQueue: [], unpushedQueue: false, published: [], alreadySeen: {}, session: null }
 	}
       }
     }
@@ -174,35 +123,36 @@ export default class DoubleRatchetFileStorage extends Observable {
     }
 
     /* Now download any incoming messages */
-    const currentMessages = []
     const existingFiles = {}
-    const messageFilesScanned = []
     for (let f in fileList)
     {
       if (fileList[f].name.endsWith('.msg'))
       {
+	const currentMessages = []
 	const parts = fileList[f].name.split('.')
+	let visited = false
 	if (parts[1] in this.peers && parts[2] == this.actorId.toString() && this.peers[parts[1]].messageFilesSeen[fileList[f].name] != fileList[f].uniqueId)
 	{
-	  messageFilesScanned.push(parts[1])
 	  /* Only look at message files that are addressed to our actorId, from verified actors */
 	  if (this.peers[parts[1]].state != "unverified")
 	  {
+	    visited = true
 	    const msgs = await this.storageAdapter.getFile(fileList[f].name)
 	    const msgList = msgs.contents.toString().split(/\r?\n/).filter(e => e && (e[0] == "0" || e[0] == "1"))
 	    for (let msg in msgList)
 	    {
-	      currentMessages.push({actorId: parts[1], type: parseInt(msgList[msg][0]), message: msgList[msg].slice(1), verified: true})
-	      if (!(currentMessages[currentMessages.length-1].message in this.alreadySeenMessageCollection))
+	      currentMessages.push({type: parseInt(msgList[msg][0]), message: msgList[msg].slice(1), verified: true})
+	      if (!(currentMessages[currentMessages.length-1].message in this.peers[parts[1]].alreadySeen))
 	      {
-		this.incomingQueue.push(currentMessages[currentMessages.length-1])
-		this.alreadySeenMessageCollection[currentMessages[currentMessages.length-1].message] = currentMessages[currentMessages.length-1].actorId
+		this.peers[parts[1]].incomingQueue.push(currentMessages[currentMessages.length-1])
+		this.peers[parts[1]].alreadySeen[currentMessages[currentMessages.length-1].message] = true
 	      }
 	    }
 	  }
 	  /* Also, carefully look at message files that are addressed to our actorId, from unverified actors */
 	  else if (this.peers[parts[1]].state == "unverified")
 	  {
+	    visited = true
 	    const msgs = await this.storageAdapter.getFile(fileList[f].name)
 	    const msgList = msgs.contents.toString().split(/\r?\n/).filter(e => e && e[0] == "0")
 	    if (msgList.length > 0)
@@ -210,11 +160,11 @@ export default class DoubleRatchetFileStorage extends Observable {
 	      /* Only let 1 message of size less than 5k for unverified actors to avoid potentially filling up storage with spam */
 	      if (msgList[0].length < 5000)
 	      {
-		currentMessages.push({actorId: parts[1], type: parseInt(msgList[0][0]), message: msgList[0].slice(1), verified: false})
-		if (!(currentMessages[currentMessages.length-1].message in this.alreadySeenMessageCollection))
+		currentMessages.push({type: parseInt(msgList[0][0]), message: msgList[0].slice(1), verified: false})
+		if (!(currentMessages[currentMessages.length-1].message in this.peers[parts[1]].alreadySeen))
 		{
-		  this.incomingQueue.push(currentMessages[currentMessages.length-1])
-		  this.alreadySeenMessageCollection[currentMessages[currentMessages.length-1].message] = currentMessages[currentMessages.length-1].actorId
+		  this.peers[parts[1]].incomingQueue.push(currentMessages[currentMessages.length-1])
+		  this.peers[parts[1]].alreadySeen[currentMessages[currentMessages.length-1].message] = true
 		}
 	      }
 	    }
@@ -222,6 +172,21 @@ export default class DoubleRatchetFileStorage extends Observable {
 	  /* Now we mark that we've seen this version of this message file */
 	  this.peers[parts[1]].messageFilesSeen[fileList[f].name] = fileList[f].uniqueId
 	}
+
+	if (visited)
+	{
+	  /* Delete messages from already seen which have disappeared from any files */
+	  const messagesOnly = currentMessages.map(ob => ob.message)
+	  for (let m in this.peers[parts[1]].alreadySeen)
+	  {
+	    /* Make sure we've actually scanned this message file during this run before deleting "rolled-off" history */
+	    if (!messagesOnly.includes(m))
+	    {
+	      delete this.peers[parts[1]].alreadySeen[m]
+	    }
+	  }
+	}
+
 	existingFiles[fileList[f].uniqueId] = true
       }
     }
@@ -237,17 +202,6 @@ export default class DoubleRatchetFileStorage extends Observable {
 	}
       }
     }
-
-    /* Delete messages from already seen which have disappeared from any files */
-    const messagesOnly = currentMessages.map(ob => ob.message)
-    for (let m in this.alreadySeenMessageCollection)
-    {
-      /* Make sure we've actually scanned this message file during this run before deleting "rolled-off" history */
-      if (messageFilesScanned.includes(this.alreadySeenMessageCollection[m]) && !messagesOnly.includes(m))
-      {
-	delete this.alreadySeenMessageCollection[m]
-      }
-    }
   }
 
   async processIncoming () {
@@ -255,25 +209,24 @@ export default class DoubleRatchetFileStorage extends Observable {
     {
       throw 'Tried to sync without loading state first'
     }
-    const messagesToPop = []
     const decryptedMessages = []
     let changedPeers = false
-    for (let m in this.incomingQueue)
+    for (let actorId in this.peers)
     {
-      const actorId = this.incomingQueue[m].actorId
-      if (actorId in this.peers)
+      const messagesToPop = []
+      for (let m in this.peers[actorId].incomingQueue)
       {
 	if (!(actorId in this.sessions))
 	{
 	  this.sessions[actorId] = new Olm.Session()
-	  this.sessions[actorId].create_inbound_from(this.account, this.peers[actorId].key, this.incomingQueue[m].message)
-	  this.outgoingQueues[actorId] = []
-	  this.outgoingQueues[actorId].push({type: "handshake", body: this.handshakeMessage})
+	  this.sessions[actorId].create_inbound_from(this.account, this.peers[actorId].key, this.peers[actorId].incomingQueue[m].message)
+	  this.peers[actorId].outgoingQueue = []
+	  this.peers[actorId].outgoingQueue.push({type: "handshake", body: this.handshakeMessage})
 	}
 	let plaintext = null
 	try
 	{
-	  plaintext = this.sessions[actorId].decrypt(this.incomingQueue[m].type, this.incomingQueue[m].message)
+	  plaintext = this.sessions[actorId].decrypt(this.peers[actorId].incomingQueue[m].type, this.peers[actorId].incomingQueue[m].message)
 	}
 	catch (e)
 	{
@@ -302,16 +255,16 @@ export default class DoubleRatchetFileStorage extends Observable {
 	    }
 	    else
 	    {
-	      this.outgoingQueues[actorId].push({type: "seen", seenIndex: msgObj.index})
+	      this.peers[actorId].outgoingQueue.push({type: "seen", seenIndex: msgObj.index})
 	    }
 	    messagesToPop.push(m)
 	  }
 	}
       }
-    }
-    for (let i = messagesToPop.length - 1; i >= 0; i--)
-    {
-      this.incomingQueue.splice(messagesToPop[i], 1)
+      for (let i = messagesToPop.length - 1; i >= 0; i--)
+      {
+	this.peers[actorId].incomingQueue.splice(messagesToPop[i], 1)
+      }
     }
     if (changedPeers)
     {
@@ -339,8 +292,8 @@ export default class DoubleRatchetFileStorage extends Observable {
 	const otk = this.peers[actorId].oneTimeKeys[0]
 	this.sessions[actorId].create_outbound(this.account, this.peers[actorId].key, otk.key)
 	usedOneTimeKeys.push(otk.filename)
-	this.outgoingQueues[actorId] = []
-	this.outgoingQueues[actorId].push({type: "handshake", body: this.handshakeMessage})
+	this.peers[actorId].outgoingQueue = []
+	this.peers[actorId].outgoingQueue.push({type: "handshake", body: this.handshakeMessage})
       }
     }
     /* Actually delete one time key files (if any were used) so nobody else tries using them */
@@ -384,23 +337,19 @@ export default class DoubleRatchetFileStorage extends Observable {
     /* First encrypt outgoing messages */
     for (let actorId in this.peers)
     {
-      if (!(actorId in this.published))
-      {
-	this.published[actorId] = new Map()
-      }
       let pushThisQueue = false
-      if (actorId in this.unpushedQueues)
+      if (this.peers[actorId].unpushedQueue)
       {
 	pushThisQueue = true
       }
 
-      for (let i in this.outgoingQueues[actorId])
+      for (let i in this.peers[actorId].outgoingQueue)
       {
 	try
 	{
-	  this.outgoingQueues[actorId][i].index = this.peers[actorId].currentIndex
-	  const ciphertext = this.sessions[actorId].encrypt(JSON.stringify(this.outgoingQueues[actorId][i]))
-	  this.published[actorId].set(this.peers[actorId].currentIndex, ciphertext)
+	  this.peers[actorId].outgoingQueue[i].index = this.peers[actorId].currentIndex
+	  const ciphertext = this.sessions[actorId].encrypt(JSON.stringify(this.peers[actorId].outgoingQueue[i]))
+	  this.peers[actorId].published.push([this.peers[actorId].currentIndex, ciphertext])
 	  pushThisQueue = true
 	  this.peers[actorId].currentIndex++
 	}
@@ -411,25 +360,24 @@ export default class DoubleRatchetFileStorage extends Observable {
 	  changedPeers = true
 	}
       }
-      const indexes = Array.from(this.published[actorId].keys())
-      if (indexes.length > 0 && this.peers[actorId].seenIndex >= indexes[0])
+      if (this.peers[actorId].published.length > 0 && this.peers[actorId].seenIndex >= this.peers[actorId].published[0][0])
       {
-	this.published[actorId] = new Map(Array.from(this.published[actorId].entries()).filter(item => item[0] > this.peers[actorId].seenIndex))
+	this.peers[actorId].published = this.peers[actorId].published.filter(item => item[0] > this.peers[actorId].seenIndex)
 	pushThisQueue = true
       }
       if (pushThisQueue)
       {
-	this.outgoingQueues[actorId] = []
-	if (!(actorId in this.unpushedQueues))
+	this.peers[actorId].outgoingQueue = []
+	if (!this.peers[actorId].unpushedQueue)
 	{
-	  this.unpushedQueues[actorId] = true
+	  this.peers[actorId].unpushedQueue = true
 	}
 
 	/* Upload message files */
-	let uploadText = Array.from(this.published[actorId].entries()).map(item => item[1].type.toString()+item[1].body).join("\n")
+	let uploadText = this.peers[actorId].published.map(item => item[1].type.toString()+item[1].body).join("\n")
 	await this.storageAdapter.putFile(FILE_PREFIX + this.actorId.toString() + '.' + actorId.toString() + '.msg', uploadText)
 
-	delete this.unpushedQueues[actorId]
+	this.peers[actorId].unpushedQueue = false
       }
     }
 
@@ -444,7 +392,6 @@ export default class DoubleRatchetFileStorage extends Observable {
     {
       throw 'Tried to sync without loading state first'
     }
-    await this.saveState()
     await this.syncIncoming()
     await this.processIncoming()
     await this.syncOutgoing()
@@ -472,7 +419,7 @@ export default class DoubleRatchetFileStorage extends Observable {
   }
 
   queueOutgoingMessage (actorId, message) {
-    this.outgoingQueues[actorId].push({type: "message", body: message})
+    this.peers[actorId].outgoingQueue.push({type: "message", body: message})
   }
 
 }

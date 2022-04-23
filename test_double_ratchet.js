@@ -75,7 +75,9 @@ if (chat)
 }
 
 await channel.saveState()
+console.log(kv.map)
 
 
+console.log("Saving State")
 fs.writeFileSync("./state"+append, JSON.stringify(kv.map))
 

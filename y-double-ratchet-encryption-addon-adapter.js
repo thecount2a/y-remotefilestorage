@@ -6,15 +6,21 @@ import { ByteWriter } from "@stablelib/bytewriter";
 import nacl from 'tweetnacl';
 const { secretbox, randomBytes } = nacl;
 
+import { Level } from 'level';
+
 export default class DoubleRatchetEncryptionAddonAdapter extends Observable {
-  constructor (nextAdapter, doubleRatchetInstance, levelUpDb) {
+  constructor (nextAdapter, doubleRatchetInstance, levelDbName) {
     super()
     this.nextAdapter = nextAdapter
     this.doubleRatchetInstance = doubleRatchetInstance
-    this._levelUpDb = levelUpDb
+    this.levelDbName = levelDbName
+    /* Local cache too, since level DB takes time to store and we don't want race conditions */
+    this._localCache = {}
 
     this._receivedMessages = this._receivedMessages.bind(this)
     this.doubleRatchetInstance.on("messagesReceived", this._receivedMessages)
+
+    this._levelDb = new Level(levelDbName, { valueEncoding: 'binary' })
   }
 
   async doesFileCacheHit (pattern) {
@@ -33,13 +39,21 @@ export default class DoubleRatchetEncryptionAddonAdapter extends Observable {
     let key = null
     try
     {
-      key = await this._levelUpDb.get(filename)
+      key = await this._levelDb.get(filename)
     }
     catch (e)
     {
       if (!e.notFound)
       {
 	throw e
+      }
+      else
+      {
+	/* Check local cache too, since level DB takes time to store and we don't want race conditions */
+	if (filename in this._localCache)
+	{
+	  key = this._localCache[filename]
+	}
       }
     }
     if (!key)
@@ -55,7 +69,7 @@ export default class DoubleRatchetEncryptionAddonAdapter extends Observable {
     let key = null
     try
     {
-      key = await this._levelUpDb.get(filename)
+      key = await this._levelDb.get(filename)
     }
     catch (e)
     {
@@ -63,11 +77,21 @@ export default class DoubleRatchetEncryptionAddonAdapter extends Observable {
       {
 	throw e
       }
+      else
+      {
+	/* Check local cache too, since level DB takes time to store and we don't want race conditions */
+	if (filename in this._localCache)
+	{
+	  key = this._localCache[filename]
+	}
+      }
     }
     if (!key || newKey)
     {
       key = randomBytes(32)
-      await this._levelUpDb.put(filename, key)
+      /* Store in local cache too, since level DB takes time to store and we don't want race conditions */
+      this._localCache[filename] = key
+      await this._levelDb.put(filename, key)
 
       for (let peer in this.doubleRatchetInstance.peers)
       {
@@ -84,14 +108,21 @@ export default class DoubleRatchetEncryptionAddonAdapter extends Observable {
 
   async deleteFile (filename) {
     await this.nextAdapter.deleteFile(filename)
-    await this._levelUpDb.del(filename)
+    await this._levelDb.del(filename)
+    /* Delete from local cache too */
+    if (filename in this._localCache)
+    {
+      delete this._localCache[filename]
+    }
   }
 
   async _receivedMessages(msgs) {
     for (let m in msgs)
     {
       const msg = JSON.parse(msgs[m].body)
-      await this._levelUpDb.put(msg.filename, decodeBase64(msg.key))
+      /* Store in local cache too (FIRST), since level DB takes time to store and we don't want race conditions */
+      this._localCache[msg.filename] = decodeBase64(msg.key)
+      await this._levelDb.put(msg.filename, decodeBase64(msg.key))
     }
   }
 
