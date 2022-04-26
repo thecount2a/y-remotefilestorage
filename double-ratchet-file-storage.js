@@ -22,48 +22,59 @@ export default class DoubleRatchetFileStorage extends Observable {
     this._levelDb = new Level(levelDbName, { valueEncoding: 'json' })
   }
 
+  async loadStateObject() {
+    let account = null
+    const data = await this._levelDb.iterator().all()
+
+    let peers = {}
+
+    for (const [key, value] of data)
+    {
+      if (key == "account")
+      {
+	account = value
+      }
+      else if (key.indexOf("-") >= 0)
+      {
+	const sp = key.split("-")
+	if (!(sp[0] in peers))
+	{
+	  peers[sp[0]] = {}
+	}
+	peers[sp[0]][sp[1]] = value
+      }
+    }
+    return {peers, account}
+  }
+
   async loadState() {
     if (!this.stateloaded)
     {
       await Olm.init()
     }
 
-    let acct = null
-    const data = await this._levelDb.iterator().all()
+    const stateObj = await this.loadStateObject()
 
-    this.peers = []
-
-    for (const [key, value] of data)
-    {
-      if (key == "account")
-      {
-	acct = value
-      }
-      else if (key.indexOf("-") >= 0)
-      {
-	const sp = key.split("-")
-	if (!(sp[0] in this.peers))
-	{
-	  this.peers[sp[0]] = {}
-	}
-	this.peers[sp[0]][sp[1]] = value
-	if (sp[1] == "session")
-	{
-	  const sessionObj = new Olm.Session()
-	  sessionObj.unpickle('fixed_insecure_key', this.peers[sp[0]].session)
-	  this.sessions[sp[0]] = sessionObj
-	}
-      }
-    }
+    this.peers = stateObj.peers
 
     this.account = new Olm.Account();
-    if (acct)
+    if (stateObj.account)
     {
-      this.account.unpickle('fixed_insecure_key', acct)
+      this.account.unpickle('fixed_insecure_key', stateObj.account)
     }
     else
     {
       this.account.create()
+    }
+
+    for (let peer in stateObj.peers)
+    {
+      if (stateObj.peers[peer].session)
+      {
+	const sessionObj = new Olm.Session()
+	sessionObj.unpickle('fixed_insecure_key', stateObj.peers[peer].session)
+	this.sessions[peer] = sessionObj
+      }
     }
 
     this.stateloaded = true

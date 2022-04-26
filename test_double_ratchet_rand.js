@@ -39,6 +39,7 @@ console.log("ARGS: "+(process.argv.slice(2).join(" ")))
 const storageAdapter = new NodejsLocalFileStorageAdapter("chat", init)
 const channel = new DoubleRatchetFileStorage(storageAdapter, actorId, "mydevice"+append, "mydevice"+append);
 await channel.loadState()
+console.log(channel.peers)
 
 channel.on("messagesReceived", function(msgs) {
   for (let msg in msgs)
@@ -47,23 +48,48 @@ channel.on("messagesReceived", function(msgs) {
   }
 })
 
-let error = false
-for (let peer in channel.peers)
+try
 {
-  if (channel.peers[peer].state != "verified")
+  for (let peer in channel.peers)
   {
-    console.log("Setting peer "+peer+" to verified")
-    await channel.markPeerTrusted(peer)
+    if (channel.peers[peer].state != "verified")
+    {
+      console.log("Setting peer "+peer+" to verified")
+      await channel.markPeerTrusted(peer)
+    }
+  }
+  await channel.sync()
+
+  if (chat)
+  {
+    console.log("Queuing outgoing message: "+chat)
+    await channel.queueOutgoingMessage(chatto, chat)
+    await channel.sync()
   }
 }
-await channel.sync()
-
-if (chat)
+finally
 {
-  console.log("Queuing outgoing message: "+chat)
-  await channel.queueOutgoingMessage(chatto, chat)
-  await channel.sync()
+  const memJson = JSON.stringify(channel.peers)
+  const stateObj = await channel.loadStateObject()
+  const storedJson = JSON.stringify(stateObj.peers)
+  if (memJson != storedJson)
+  {
+    console.log("ERROR: Stored peer JSON is different than memory JSON (or this session is new and object keys are not yet sorted)")
+  }
+  for (let peer in channel.sessions)
+  {
+    if (channel.sessions[peer].pickle('fixed_insecure_key') != stateObj.peers[peer].session)
+    {
+      console.log("ERROR: Stored session pickle for peer "+peer+" is different than memory session")
+    }
+  }
+  if (channel.account.pickle('fixed_insecure_key') != stateObj.account)
+  {
+    console.log("ERROR: Stored account pickle is different than memory account")
+  }
+  console.log("Done checking DB consistency")
 }
 
+console.log(channel.peers)
 
 

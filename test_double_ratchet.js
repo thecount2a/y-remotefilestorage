@@ -40,6 +40,7 @@ if (process.argv.length > 5)
 const storageAdapter = new NodejsLocalFileStorageAdapter("chat")
 const channel = new DoubleRatchetFileStorage(storageAdapter, actorId, "mydevice"+append, "mydevice"+append);
 await channel.loadState()
+console.log(channel.peers)
 
 channel.on("messagesReceived", function(msgs) {
   for (let msg in msgs)
@@ -48,20 +49,48 @@ channel.on("messagesReceived", function(msgs) {
   }
 })
 
-for (let peer in channel.peers)
+try
 {
-  if (channel.peers[peer].state != "verified")
+  for (let peer in channel.peers)
   {
-    console.log("Setting peer "+peer+" to verified")
-    await channel.markPeerTrusted(peer)
+    if (channel.peers[peer].state != "verified")
+    {
+      console.log("Setting peer "+peer+" to verified")
+      await channel.markPeerTrusted(peer)
+    }
+  }
+  await channel.sync()
+  let peers = Object.keys(channel.peers)
+  if (chat)
+  {
+    console.log("Queuing outgoing message: "+chat)
+    await channel.queueOutgoingMessage(chatto, chat)
+    await channel.sync()
   }
 }
-await channel.sync()
-let peers = Object.keys(channel.peers)
-if (chat)
+finally
 {
-  console.log("Queuing outgoing message: "+chat)
-  await channel.queueOutgoingMessage(chatto, chat)
-  await channel.sync()
+  const memJson = JSON.stringify(channel.peers)
+  const stateObj = await channel.loadStateObject()
+  const storedJson = JSON.stringify(stateObj.peers)
+  if (memJson != storedJson)
+  {
+    console.log("ERROR: Stored peer JSON is different than memory JSON (or this session is new and object keys are not yet sorted)")
+    console.log(storedJson)
+    console.log(memJson)
+  }
+  for (let peer in channel.sessions)
+  {
+    if (channel.sessions[peer].pickle('fixed_insecure_key') != stateObj.peers[peer].session)
+    {
+      console.log("ERROR: Stored session pickle for peer "+peer+" is different than memory session")
+    }
+  }
+  if (channel.account.pickle('fixed_insecure_key') != stateObj.account)
+  {
+    console.log("ERROR: Stored account pickle is different than memory account")
+  }
+  console.log("Done checking DB consistency")
 }
 
+console.log(channel.peers)
