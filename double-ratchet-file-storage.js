@@ -340,6 +340,7 @@ export default class DoubleRatchetFileStorage extends Observable {
 	usedOneTimeKeys.push(otk.filename)
 	this.peers[actorId].outgoingQueue = []
 	this.peers[actorId].outgoingQueue.push({type: "handshake", body: this.handshakeMessage})
+	await this._levelDb.put(actorId + "-outgoingQueue", this.peers[actorId].outgoingQueue)
 
 	this.peers[actorId].session = this.sessions[actorId].pickle('fixed_insecure_key')
 	await this._levelDb.put(actorId + "-session", this.peers[actorId].session)
@@ -429,6 +430,7 @@ export default class DoubleRatchetFileStorage extends Observable {
 	await this._levelDb.put(actorId + "-published", this.peers[actorId].published)
 
 	this.peers[actorId].outgoingQueue = []
+	await this._levelDb.put(actorId + "-outgoingQueue", this.peers[actorId].outgoingQueue)
 	if (!this.peers[actorId].unpushedQueue)
 	{
 	  this.peers[actorId].unpushedQueue = true
