@@ -66,35 +66,7 @@ export default class DoubleRatchetFileStorage extends Observable {
       this.account.create()
     }
 
-    /*const peers = await this._kvGet('peers')
-    if (peers)
-    {
-      this.peers = JSON.parse(peers)
-      for (let actorId in this.peers)
-      {
-	if (this.peers[actorId].session)
-	{
-	  const sessionObj = new Olm.Session()
-	  sessionObj.unpickle('fixed_insecure_key', this.peers[actorId].session)
-	  this.sessions[actorId] = sessionObj
-	}
-      }
-    }*/
-
     this.stateloaded = true
-  }
-
-  async saveState() {
-    if (!this.stateloaded)
-    {
-      throw 'Tried to save state without loading it first'
-    }
-    //await this._kvSet('account', this.account.pickle('fixed_insecure_key'))
-    //for (let session in this.sessions)
-    //{
-    //  this.peers[session].session = this.sessions[session].pickle('fixed_insecure_key')
-    //}
-    //await this._kvSet('peers', JSON.stringify(this.peers))
   }
 
   async syncIncoming () {

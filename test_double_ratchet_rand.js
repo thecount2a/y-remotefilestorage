@@ -1,24 +1,8 @@
 import * as fs from 'fs';
 import * as process from 'process';
-import NodejsLocalFileStorageAdapter from './y-nodejsstorageadapter.js'
+import NodejsLocalFileStorageAdapter from './y-nodejsstorageadapter-random-failure.js'
 import DoubleRatchetFileStorage from './double-ratchet-file-storage.js'
 
-class kvstore {
-  constructor () {
-    this.map = {}
-  }
-
-  async get(k) {
-    if (!(k in this.map))
-    {
-      return null
-    }
-    return this.map[k]
-  }
-  async set(k, val) {
-    this.map[k] = val
-  }
-}
 let append = ""
 if (process.argv.length > 2)
 {
@@ -37,7 +21,22 @@ if (process.argv.length > 5)
   chat = process.argv[5]
 }
 
-const storageAdapter = new NodejsLocalFileStorageAdapter("chat")
+let init = 333
+//let init = 444
+for (let arg in process.argv)
+{
+  //console.log("Buffer "+arg.toString())
+  const buf = Buffer.from(process.argv[arg])
+  for (let ch of buf)
+  {
+    init += ch
+    //console.log(ch)
+  }
+}
+console.log(init)
+
+console.log("ARGS: "+(process.argv.slice(2).join(" ")))
+const storageAdapter = new NodejsLocalFileStorageAdapter("chat", init)
 const channel = new DoubleRatchetFileStorage(storageAdapter, actorId, "mydevice"+append, "mydevice"+append);
 await channel.loadState()
 
@@ -48,6 +47,7 @@ channel.on("messagesReceived", function(msgs) {
   }
 })
 
+let error = false
 for (let peer in channel.peers)
 {
   if (channel.peers[peer].state != "verified")
@@ -57,11 +57,13 @@ for (let peer in channel.peers)
   }
 }
 await channel.sync()
-let peers = Object.keys(channel.peers)
+
 if (chat)
 {
   console.log("Queuing outgoing message: "+chat)
   await channel.queueOutgoingMessage(chatto, chat)
   await channel.sync()
 }
+
+
 
