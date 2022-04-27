@@ -1,6 +1,8 @@
 import * as Y from 'yjs'
 import { Observable } from 'lib0/observable.js'
 
+import { Level } from 'level';
+
 export const PREFERRED_MAX_UPDATE_SIZE = 50000
 export const RATIO_OF_UPDATE_FILES_TO_CLEANUP = 0.5
 
@@ -11,21 +13,56 @@ export const fetchUpdates = async (rfsPersistence, allowCachedList = true) => {
   {
     initialYdoc = new Y.Doc();
   }
+  let uniqueIdsStore = null
+  if (rfsPersistence._levelDb)
+  {
+    uniqueIdsStore = rfsPersistence._levelDb.sublevel('uniqueIds', { valueEncoding: 'json' })
+  }
+  let cacheContentsStore = null
+  if (rfsPersistence._levelDb)
+  {
+    cacheContentsStore = rfsPersistence._levelDb.sublevel('cacheContents', { valueEncoding: 'binary' })
+  }
   for (let fname in lst)
   {
-    /* Do we have a fully-valid version of this file in the cache? If so, omit it for performance reasons */
-    const cacheHit = await rfsPersistence.storage.doesFileCacheHit(fname)
-    if (!cacheHit || !rfsPersistence.initialSyncDone)
+    let cachedId = null
+    if (rfsPersistence._levelDb)
+    {
+      try
+      {
+        cachedId = await uniqueIdsStore.get(fname)
+      }
+      catch (e)
+      {
+        if (!e.notFound)
+        {
+          throw e
+        }
+      }
+    }
+    let contents = null
+    if (!cachedId || lst[fname].uniqueId != cachedId)
     {
       const fobj = await rfsPersistence.storage.getFile(fname)
-      if (!cacheHit)
-      {
-        Y.applyUpdate(rfsPersistence.doc, fobj.contents, rfsPersistence)
-      }
-      if (!rfsPersistence.initialSyncDone)
-      {
-        Y.applyUpdate(initialYdoc, fobj.contents)
-      }
+      contents = fobj.contents
+    }
+    else
+    {
+      contents = await cacheContentsStore.get(fname)
+    }
+
+    Y.applyUpdate(rfsPersistence.doc, contents, rfsPersistence)
+
+    if (!rfsPersistence.initialSyncDone)
+    {
+      Y.applyUpdate(initialYdoc, contents)
+    }
+    
+    if (rfsPersistence._levelDb && (!cachedId || lst[fname].uniqueId != cachedId))
+    {
+      await uniqueIdsStore.put(fname, lst[fname].uniqueId)
+
+      await cacheContentsStore.put(fname, contents)
     }
   }
   if (!rfsPersistence.initialSyncDone)
@@ -154,7 +191,7 @@ export const flushState = async (rfsPersistence, forceRollup = false) => {
  * @extends Observable<string>
  */
 export default class RemoteFileStoragePersistence extends Observable {
-  constructor (name, doc, actorId, storageAdapter, maxUpdateFiles = 20, rollupStrategy = "rollupeverything") {
+  constructor (name, doc, actorId, storageAdapter, maxUpdateFiles = 20, rollupStrategy = "rollupeverything", levelDbName = null) {
     super()
     this.doc = doc
     this.name = name
@@ -177,6 +214,15 @@ export default class RemoteFileStoragePersistence extends Observable {
      *                                          to holding the main ydoc in memory.
      */
     this.rollupStrategy = rollupStrategy
+
+    if (levelDbName)
+    {
+      this._levelDb = new Level(levelDbName, { valueEncoding: 'binary' })
+    }
+    else
+    {
+      this._levelDb = null
+    }
 
     this._checkInitialSync = async () => {
       if (!this.initialSyncDone)
