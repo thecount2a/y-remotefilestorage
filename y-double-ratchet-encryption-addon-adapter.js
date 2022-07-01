@@ -23,10 +23,6 @@ export default class DoubleRatchetEncryptionAddonAdapter extends Observable {
     this._levelDb = new Level(levelDbName, { valueEncoding: 'binary' })
   }
 
-  async doesFileCacheHit (pattern) {
-    return await this.nextAdapter.doesFileCacheHit(pattern) 
-  }
-
   async getFileList (pattern, allowCachedList = false) {
     return await this.nextAdapter.getFileList (pattern, allowCachedList) 
   }

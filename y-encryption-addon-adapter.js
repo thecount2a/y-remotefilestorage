@@ -14,10 +14,6 @@ export default class EncryptionAddonAdapter extends Observable {
     this.encryptionPassword = encryptionPassword
   }
 
-  async doesFileCacheHit (pattern) {
-    return await this.nextAdapter.doesFileCacheHit(pattern) 
-  }
-
   async getFileList (pattern, allowCachedList = false) {
     return await this.nextAdapter.getFileList (pattern, allowCachedList) 
   }

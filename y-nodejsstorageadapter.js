@@ -31,11 +31,6 @@ export default class NodejsLocalFileStorageAdapter extends Observable {
     }, 10)
   }
 
-  async doesFileCacheHit (pattern) {
-    /* Return false since this adapter does not cache */
-    return false
-  }
-
   async getFileList (pattern, allowCachedList = false) {
     const files = fs.readdirSync(this.directory, { withFileTypes: true })
     const returnObj = {}
